@@ -16,11 +16,11 @@ arxiv.Result._get_pdf_url = _get_pdf_url_patch
 import argparse
 import os
 import sys
+import socket
 from dotenv import load_dotenv
 load_dotenv(override=True)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from pyzotero import zotero
-from recommender import rerank_paper
 from construct_email import render_email, send_email
 from tqdm import trange,tqdm
 from loguru import logger
@@ -29,6 +29,8 @@ from tempfile import mkstemp
 from paper import ArxivPaper
 from llm import set_global_llm
 import feedparser
+import requests
+from network import TimeoutSession, HTTP_TIMEOUT
 
 def get_zotero_corpus(id:str,key:str) -> list[dict]:
     zot = zotero.Zotero(id, 'user', key)
@@ -61,11 +63,18 @@ def filter_corpus(corpus:list[dict], pattern:str) -> list[dict]:
 
 
 def get_arxiv_paper(query:str, debug:bool=False) -> list[ArxivPaper]:
-    client = arxiv.Client(num_retries=10,delay_seconds=10)
-    feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
-    if 'Feed error for query' in feed.feed.title:
-        raise Exception(f"Invalid ARXIV_QUERY: {query}.")
+    client = arxiv.Client(num_retries=3,delay_seconds=5)
+    # arxiv 2.1.3 does not pass a timeout to its requests session.
+    client._session.close()
+    client._session = TimeoutSession()
     if not debug:
+        response = requests.get(f"https://rss.arxiv.org/atom/{query}", timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        feed = feedparser.parse(response.content)
+        if not feed.feed.get('title') or feed.get('bozo'):
+            raise RuntimeError("arXiv returned an invalid Atom feed; refusing to treat this as an empty day.")
+        if 'Feed error for query' in feed.feed.title:
+            raise RuntimeError("Invalid ARXIV_QUERY; check the configured arXiv categories.")
         papers = []
         all_paper_ids = [i.id.removeprefix("oai:arXiv.org:") for i in feed.entries if i.arxiv_announce_type == 'new']
         bar = tqdm(total=len(all_paper_ids),desc="Retrieving Arxiv papers")
@@ -90,6 +99,41 @@ def get_arxiv_paper(query:str, debug:bool=False) -> list[ArxivPaper]:
 
 
 parser = argparse.ArgumentParser(description='Recommender system for academic papers')
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('true', '1'):
+        return True
+    if value.lower() in ('false', '0'):
+        return False
+    raise argparse.ArgumentTypeError('Expected true/false or 1/0')
+
+
+def deliver_email(args, html):
+    if args.dry_run:
+        logger.success("Dry run complete: recommendation email rendered; SMTP was not contacted.")
+        return
+    logger.info("Sending email...")
+    send_email(args.sender, args.receiver, args.sender_password, args.smtp_server, args.smtp_port, html)
+    logger.success("Email sent successfully! If you don't receive the email, please check the configuration and the junk box.")
+
+
+def configure_llm(args, papers):
+    try:
+        if args.use_llm_api:
+            logger.info("Using OpenAI API as global LLM.")
+            set_global_llm(api_key=args.openai_api_key, base_url=args.openai_api_base, model=args.model_name, lang=args.language)
+        else:
+            logger.info("Using Local LLM as global LLM.")
+            set_global_llm(lang=args.language)
+    except Exception as e:
+        logger.warning(f"LLM initialization failed ({type(e).__name__}); recommending with abstracts only.")
+        for paper in papers:
+            # Cache the fallback so rendering does not retry model initialization.
+            paper.tldr = paper.summary
+            paper.affiliations = None
+
 
 def add_argument(*args, **kwargs):
     def get_env(key:str,default=None):
@@ -117,7 +161,9 @@ if __name__ == '__main__':
     add_argument('--zotero_id', type=str, help='Zotero user ID')
     add_argument('--zotero_key', type=str, help='Zotero API key')
     add_argument('--zotero_ignore',type=str,help='Zotero collection to ignore, using gitignore-style pattern.')
-    add_argument('--send_empty', type=bool, help='If get no arxiv paper, send empty email',default=False)
+    add_argument('--send_empty', type=parse_bool, help='If get no arxiv paper, send empty email',default=False)
+    add_argument('--dry_run', type=parse_bool, nargs='?', const=True, default=False,
+                 help='Render the recommendation without connecting to SMTP')
     add_argument('--max_paper_num', type=int, help='Maximum number of papers to recommend',default=100)
     add_argument('--arxiv_query', type=str, help='Arxiv search query')
     add_argument('--smtp_server', type=str, help='SMTP server')
@@ -127,7 +173,7 @@ if __name__ == '__main__':
     add_argument('--sender_password', type=str, help='Sender email password')
     add_argument(
         "--use_llm_api",
-        type=bool,
+        type=parse_bool,
         help="Use OpenAI API to generate TLDR",
         default=False,
     )
@@ -157,6 +203,16 @@ if __name__ == '__main__':
     )
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     args = parser.parse_args()
+    # arxiv source downloads use urllib rather than requests.
+    socket.setdefaulttimeout(60)
+    required = ['zotero_id', 'zotero_key']
+    if not args.debug:
+        required.append('arxiv_query')
+    if not args.dry_run:
+        required.extend(['smtp_server', 'smtp_port', 'sender', 'receiver', 'sender_password'])
+    missing = [name.upper() for name in required if not getattr(args, name)]
+    if missing:
+        parser.error('Missing configuration: ' + ', '.join(missing))
     assert (
         not args.use_llm_api or args.openai_api_key is not None
     )  # If use_llm_api is True, openai_api_key must be provided
@@ -182,19 +238,15 @@ if __name__ == '__main__':
         if not args.send_empty:
           exit(0)
     else:
+        if not corpus:
+            raise RuntimeError("Zotero contains no usable abstracts after filtering; cannot rank recommendations.")
         logger.info("Reranking papers...")
+        from recommender import rerank_paper
         papers = rerank_paper(papers, corpus)
         if args.max_paper_num != -1:
             papers = papers[:args.max_paper_num]
-        if args.use_llm_api:
-            logger.info("Using OpenAI API as global LLM.")
-            set_global_llm(api_key=args.openai_api_key, base_url=args.openai_api_base, model=args.model_name, lang=args.language)
-        else:
-            logger.info("Using Local LLM as global LLM.")
-            set_global_llm(lang=args.language)
+        configure_llm(args, papers)
 
     html = render_email(papers)
-    logger.info("Sending email...")
-    send_email(args.sender, args.receiver, args.sender_password, args.smtp_server, args.smtp_port, html)
-    logger.success("Email sent successfully! If you don't receive the email, please check the configuration and the junk box.")
+    deliver_email(args, html)
 

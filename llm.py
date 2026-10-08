@@ -1,4 +1,3 @@
-from llama_cpp import Llama
 from openai import OpenAI
 from loguru import logger
 from time import sleep
@@ -8,8 +7,10 @@ GLOBAL_LLM = None
 class LLM:
     def __init__(self, api_key: str = None, base_url: str = None, model: str = None,lang: str = "English"):
         if api_key:
-            self.llm = OpenAI(api_key=api_key, base_url=base_url)
+            # Avoid stacking the SDK's retries with the retry loop below.
+            self.llm = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
         else:
+            from llama_cpp import Llama
             self.llm = Llama.from_pretrained(
                 repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
                 filename="qwen2.5-3b-instruct-q4_k_m.gguf",
@@ -28,7 +29,7 @@ class LLM:
                     response = self.llm.chat.completions.create(messages=messages, temperature=0, model=self.model)
                     break
                 except Exception as e:
-                    logger.error(f"Attempt {attempt + 1} failed: {e}")
+                    logger.warning(f"LLM attempt {attempt + 1} failed ({type(e).__name__}).")
                     if attempt == max_retries - 1:
                         raise
                     sleep(3)
