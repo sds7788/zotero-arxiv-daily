@@ -132,14 +132,29 @@ def render_email(papers:list[ArxivPaper]):
             authors = ', '.join(author_list)
         else:
             authors = ', '.join(author_list[:3] + ['...'] + author_list[-2:])
-        if p.affiliations is not None:
-            affiliations = p.affiliations[:5]
+        try:
+            paper_affiliations = p.affiliations
+        except Exception as e:
+            logger.warning(f"Affiliations unavailable for {p.arxiv_id} ({type(e).__name__}).")
+            paper_affiliations = None
+        if paper_affiliations is not None:
+            affiliations = paper_affiliations[:5]
             affiliations = ', '.join(affiliations)
-            if len(p.affiliations) > 5:
+            if len(paper_affiliations) > 5:
                 affiliations += ', ...'
         else:
             affiliations = 'Unknown Affiliation'
-        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, p.code_url, affiliations))
+        try:
+            tldr = p.tldr
+        except Exception as e:
+            logger.warning(f"TLDR unavailable for {p.arxiv_id} ({type(e).__name__}); using abstract.")
+            tldr = p.summary
+        try:
+            code_url = p.code_url
+        except Exception as e:
+            logger.warning(f"Code link unavailable for {p.arxiv_id} ({type(e).__name__}).")
+            code_url = None
+        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,tldr, p.pdf_url, code_url, affiliations))
         time.sleep(10)
 
     content = '<br>' + '</br><br>'.join(parts) + '</br>'
@@ -156,14 +171,13 @@ def send_email(sender:str, receiver:str, password:str,smtp_server:str,smtp_port:
     today = datetime.datetime.now().strftime('%Y/%m/%d')
     msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
 
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-    except Exception as e:
-        logger.warning(f"Failed to use TLS. {e}")
-        logger.warning(f"Try to use SSL.")
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-
-    server.login(sender, password)
-    server.sendmail(sender, [receiver], msg.as_string())
-    server.quit()
+    if smtp_port == 465:
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=60)
+    else:
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=60)
+    with server:
+        if smtp_port != 465:
+            server.starttls()
+        server.login(sender, password)
+        # Do not automatically retry: an uncertain SMTP reply can mean delivered mail.
+        server.sendmail(sender, [receiver], msg.as_string())

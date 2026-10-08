@@ -1,39 +1,53 @@
-name: Test workflow
+name: Test workflow (no email)
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zotero-arxiv-daily
+  cancel-in-progress: false
 
 jobs:
   calculate-and-send:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout this repository
+        uses: actions/checkout@v6
         with:
-          repository: ${{ vars.REPOSITORY }}
-          ref: ${{ vars.REF }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: '.python-version'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
         with:
           version: '0.5.4'
+          enable-cache: true
+
+      - name: Install locked dependencies
+        timeout-minutes: 30
+        run: uv sync --locked
 
       - name: Run script
+        timeout-minutes: 300
         env:
+          PYTHONUNBUFFERED: '1'
           ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
           ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
           ZOTERO_IGNORE: ${{ vars.ZOTERO_IGNORE }}
-          ARXIV_QUERY: ${{ secrets.ARXIV_QUERY }}
           SEND_EMPTY: ${{ vars.SEND_EMPTY }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SENDER: ${{ secrets.SENDER }}
-          RECEIVER: ${{ secrets.RECEIVER }}
-          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          ARXIV_QUERY: ${{ secrets.ARXIV_QUERY }}
           MAX_PAPER_NUM: ${{ secrets.MAX_PAPER_NUM }}
           USE_LLM_API: ${{ secrets.USE_LLM_API }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           MODEL_NAME: ${{ secrets.MODEL_NAME }}
           LANGUAGE: ${{ vars.LANGUAGE }}
-        run: |
-          uv run main.py --debug
+          DRY_RUN: 'true'
+        run: uv run --no-sync main.py --debug --dry_run

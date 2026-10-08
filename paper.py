@@ -53,10 +53,12 @@ class ArxivPaper:
     @cached_property
     def code_url(self) -> Optional[str]:
         s = requests.Session()
-        retries = Retry(total=5, backoff_factor=0.1)
+        retries = Retry(total=2, backoff_factor=0.5)
         s.mount('https://', HTTPAdapter(max_retries=retries))
         try:
-            paper_list = s.get(f'https://paperswithcode.com/api/v1/papers/?arxiv_id={self.arxiv_id}').json()
+            response = s.get(f'https://paperswithcode.com/api/v1/papers/?arxiv_id={self.arxiv_id}', timeout=(10, 30))
+            response.raise_for_status()
+            paper_list = response.json()
         except Exception as e:
             logger.debug(f'Error when searching {self.arxiv_id}: {e}')
             return None
@@ -66,7 +68,9 @@ class ArxivPaper:
         paper_id = paper_list['results'][0]['id']
 
         try:
-            repo_list = s.get(f'https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/').json()
+            response = s.get(f'https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/', timeout=(10, 30))
+            response.raise_for_status()
+            repo_list = response.json()
         except Exception as e:
             logger.debug(f'Error when searching {self.arxiv_id}: {e}')
             return None
@@ -90,8 +94,8 @@ class ArxivPaper:
                     return None # 直接返回 None，后续依赖 tex 的代码会安全地处理
                 else:
                     # 如果是其他 HTTP 错误 (如 503)，这可能是临时性问题，值得记录下来
-                    logger.error(f"HTTP Error {e.code} when downloading source for {self.arxiv_id}: {e.reason}")
-                    raise # 重新抛出异常，因为这可能是个需要关注的严重问题
+                    logger.warning(f"Source unavailable for {self.arxiv_id} (HTTP {e.code}); using abstract only.")
+                    return None
             except Exception as e:
                 logger.error(f"Error when downloading source for {self.arxiv_id}: {e}")
                 return None
