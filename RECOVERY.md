@@ -103,3 +103,18 @@ gh workflow run main.yml --repo sds7788/zotero-arxiv-daily \
 ## 防止再次停用
 
 至少每 60 天内维护一次仓库，例如检查上游更新并合并需要的修复。持续无人维护而又要求长期定时运行时，应改用有持久调度的服务器。没有添加自动保活提交，也没有修改 Secrets 或创建额外通知任务。
+
+
+## 授权后的执行结果（2026-10-08）
+
+- 用户已明确确认合并修复、执行不发邮件的线上验证并恢复每日推送。
+- PR #2 已合并，提交为 `3061a75a1d1b7ab26d0cc05d93bd8596f741ce5a`。合并后 GitHub 自动将每日工作流恢复为 `active`。
+- [线上验证运行 37748208785](https://github.com/sds7788/zotero-arxiv-daily/actions/runs/37748208785) 已成功；job `113214709757` 的所有步骤成功，job 耗时 13 分 34 秒，总运行耗时约 13 分 38 秒。
+- 完整依赖安装成功（1 分 17 秒），实际 Zotero 检索、过滤和排序成功；最近 5 篇论文全部完成本地模型生成和邮件渲染。
+- 日志明确包含 `Dry run complete: recommendation email rendered; SMTP was not contacted.`；没有成功发信日志，未发送测试邮件。
+- 代码链接服务返回非 JSON 响应时已成功降级，不妨碍本次推荐完成。
+- 已在登录后的 Settings → Actions → General 核查：允许运行全部 Actions，日志保留期为 90 天；未修改仓库权限和 Secrets。
+- 线上运行使用 Ubuntu 24.04。GitHub 给出 ubuntu-latest 将于 2026-10-19 开始迁移到 Ubuntu 26 的提示；两个工作流因此固定为 ubuntu-24.04，沿用已成功验证的操作系统。
+- 在线上完整验证之后，另补充本地 LLM 输出最多 512 tokens 的保护（提交 `affdb37d10e50fcf0ede3c497d1e819d892b655e`）。锁定的 llama-cpp-python 0.3.2 官方接口支持该参数，输出预算离线检查及原 10 项回归测试通过；没有为这一附加限制重新运行完整模型。
+- 保留每天 UTC 22:00 / 北京时间次日 06:00 的定时；下次预期触发是北京时间 2026-10-09 06:00，GitHub 可能延迟启动。当天无新论文且 SEND_EMPTY=false 时不发邮件。
+- SMTP 凭据及收件箱投递未作实际发信验证，需以恢复后的正常定时邮件到达为准。原 Secrets 没有被查询或重设。
