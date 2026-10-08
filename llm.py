@@ -8,7 +8,7 @@ GLOBAL_LLM = None
 class LLM:
     def __init__(self, api_key: str = None, base_url: str = None, model: str = None,lang: str = "English"):
         if api_key:
-            self.llm = OpenAI(api_key=api_key, base_url=base_url)
+            self.llm = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
         else:
             self.llm = Llama.from_pretrained(
                 repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",

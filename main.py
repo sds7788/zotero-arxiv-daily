@@ -29,6 +29,7 @@ from tempfile import mkstemp
 from paper import ArxivPaper
 from llm import set_global_llm
 import feedparser
+import requests
 
 def get_zotero_corpus(id:str,key:str) -> list[dict]:
     zot = zotero.Zotero(id, 'user', key)
@@ -62,9 +63,13 @@ def filter_corpus(corpus:list[dict], pattern:str) -> list[dict]:
 
 def get_arxiv_paper(query:str, debug:bool=False) -> list[ArxivPaper]:
     client = arxiv.Client(num_retries=10,delay_seconds=10)
-    feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
-    if 'Feed error for query' in feed.feed.title:
+    response = requests.get(f"https://rss.arxiv.org/atom/{query}", timeout=(10, 60))
+    response.raise_for_status()
+    feed = feedparser.parse(response.content)
+    if 'Feed error for query' in feed.feed.get('title', ''):
         raise Exception(f"Invalid ARXIV_QUERY: {query}.")
+    if not feed.feed.get('title'):
+        raise RuntimeError('arXiv returned an invalid feed; refusing to treat it as an empty day.')
     if not debug:
         papers = []
         all_paper_ids = [i.id.removeprefix("oai:arXiv.org:") for i in feed.entries if i.arxiv_announce_type == 'new']
@@ -155,6 +160,7 @@ if __name__ == '__main__':
         help="Language of TLDR",
         default="English",
     )
+    parser.add_argument('--dry-run', action='store_true', help='Retrieve, rank and render without connecting to SMTP')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     args = parser.parse_args()
     assert (
@@ -194,6 +200,9 @@ if __name__ == '__main__':
             set_global_llm(lang=args.language)
 
     html = render_email(papers)
+    if args.dry_run:
+        logger.success(f'Dry run completed: rendered {len(papers)} recommendations; email delivery skipped.')
+        sys.exit(0)
     logger.info("Sending email...")
     send_email(args.sender, args.receiver, args.sender_password, args.smtp_server, args.smtp_port, html)
     logger.success("Email sent successfully! If you don't receive the email, please check the configuration and the junk box.")
